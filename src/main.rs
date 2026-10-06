@@ -2,10 +2,29 @@ use std::{
     io::{self, Read, Write},
     net::{TcpListener, TcpStream},
     sync::atomic::{AtomicU64, Ordering},
-    thread::spawn,
+    thread::{sleep, spawn},
+    time::{Duration, Instant},
 };
 
+use clap::Parser;
+use rand::{Rng, RngExt};
+
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Parser, Debug)]
+struct Args {
+    #[arg(long)]
+    listen: String,
+
+    #[arg(long)]
+    upstream: String,
+
+    #[arg(long, default_value_t = 0)]
+    latency: u64,
+
+    #[arg(long, default_value_t = 0)]
+    jitter: u64,
+}
 
 fn dump(data: &[u8]) {
     for (offset, chunk) in data.chunks(16).enumerate() {
@@ -32,13 +51,27 @@ fn dump(data: &[u8]) {
     }
 }
 
+fn apply_delay(base_ms: u64, jitter_ms: u64) -> u64 {
+    let mut rng = rand::rng();
+
+    let min = base_ms.saturating_sub(jitter_ms); // 防止向下溢出
+    let max = base_ms + jitter_ms;
+
+    let delay = rng.random_range(min..=max);
+
+    sleep(Duration::from_millis(delay));
+
+    delay
+}
+
 fn forword(
     mut reader: TcpStream,
     mut writer: TcpStream,
     conn_id: u64,
     direction: &str,
-) -> io::Result<()> {
+) -> io::Result<u64> {
     let mut buf = [0u8; 4096];
+    let mut total_bytes = 0u64;
 
     loop {
         let n = reader.read(&mut buf)?;
@@ -51,13 +84,18 @@ fn forword(
         println!("[conn {conn_id}] [{direction}] {n} bytes");
         dump(&buf[..n]);
 
+        let delay = apply_delay(100, 20);
+        println!("[conn {conn_id}] [{direction}] delayed {delay} ms");
+
         writer.write_all(&buf[..n])?;
+        total_bytes += n as u64;
     }
 
-    Ok(())
+    Ok(total_bytes)
 }
 
 fn handle_client(client: TcpStream, conn_id: u64) -> io::Result<()> {
+    let start = Instant::now();
     let server = TcpStream::connect("127.0.0.1:8000")?;
 
     println!("connected to upstream server");
@@ -66,17 +104,29 @@ fn handle_client(client: TcpStream, conn_id: u64) -> io::Result<()> {
     let server_read = server.try_clone()?;
 
     let c2s = spawn(move || forword(client_read, server, conn_id, "Client -> Server"));
-    forword(server_read, client, conn_id, "Server -> Client")?;
 
-    c2s.join().unwrap()?;
+    let s2c_result = forword(server_read, client, conn_id, "Server -> Client");
+
+    let c2s_result = c2s.join().unwrap();
+
+    let s2c_bytes = s2c_result?;
+    let c2s_bytes = c2s_result?;
+
+    let elapsed = start.elapsed();
+    println!(
+        "[conn {conn_id}] closed: Client->Server={c2s_bytes} bytes, Server->Client={s2c_bytes} bytes, duration={elapsed:?}"
+    );
 
     Ok(())
 }
 
 fn main() -> io::Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:9000")?;
+    let args = Args::parse();
 
-    println!("PacketTap listening on 127.0.0.1:9000");
+    let addr = &args.listen;
+    let listener = TcpListener::bind(addr)?;
+
+    println!("PacketTap listening on {addr}");
 
     loop {
         let (client, addr) = listener.accept()?;
