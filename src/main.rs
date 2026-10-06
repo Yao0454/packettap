@@ -14,6 +14,12 @@ use rand::RngExt;
 
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Debug, Clone, Copy)]
+struct DirectionConfig {
+    latency: Duration,
+    jitter: Duration,
+}
+
 #[derive(Parser, Debug)]
 struct Args {
     #[arg(long)]
@@ -23,17 +29,27 @@ struct Args {
     upstream: String,
 
     #[arg(long, default_value_t = 0)]
-    latency: u64,
+    client_to_server_latency: u64,
 
     #[arg(long, default_value_t = 0)]
-    jitter: u64,
+    client_to_server_jitter: u64,
+
+    #[arg(long, default_value_t = 0)]
+    server_to_client_latency: u64,
+
+    #[arg(long, default_value_t = 0)]
+    server_to_client_jitter: u64,
+
+    #[arg(long)]
+    hex: bool,
 }
 
 #[derive(Debug)]
 struct Config {
     upstream: String,
-    latency: u64,
-    jitter: u64,
+    client_to_server: DirectionConfig,
+    server_to_client: DirectionConfig,
+    hex: bool,
 }
 
 fn dump(data: &[u8]) {
@@ -61,17 +77,21 @@ fn dump(data: &[u8]) {
     }
 }
 
-fn apply_delay(base_ms: u64, jitter_ms: u64) -> u64 {
-    let mut rng = rand::rng();
+fn apply_delay(base: Duration, jitter: Duration) {
+    if base.is_zero() && jitter.is_zero() {
+        return;
+    }
+
+    let base_ms = base.as_millis() as u64;
+    let jitter_ms = jitter.as_millis() as u64;
 
     let min = base_ms.saturating_sub(jitter_ms); // 防止向下溢出
     let max = base_ms + jitter_ms;
 
-    let delay = rng.random_range(min..=max);
+    let mut rng = rand::rng();
+    let delay_ms = rng.random_range(min..=max);
 
-    sleep(Duration::from_millis(delay));
-
-    delay
+    sleep(Duration::from_millis(delay_ms));
 }
 
 fn forword(
@@ -79,7 +99,8 @@ fn forword(
     mut writer: TcpStream,
     conn_id: u64,
     direction: &str,
-    config: Arc<Config>,
+    direction_config: DirectionConfig,
+    hex: bool,
 ) -> io::Result<u64> {
     let mut buf = [0u8; 4096];
     let mut total_bytes = 0u64;
@@ -92,12 +113,12 @@ fn forword(
             break;
         }
 
-        println!("[conn {conn_id}] [{direction}] {n} bytes");
-        dump(&buf[..n]);
+        if hex {
+            dump(&buf[..n]);
+            println!("[conn {conn_id}] [{direction}] {n} bytes");
+        }
 
-        let delay = apply_delay(config.latency, config.jitter);
-        println!("[conn {conn_id}] [{direction}] delayed {delay} ms");
-
+        apply_delay(direction_config.latency, direction_config.jitter);
         writer.write_all(&buf[..n])?;
         total_bytes += n as u64;
     }
@@ -114,20 +135,39 @@ fn handle_client(client: TcpStream, conn_id: u64, config: Arc<Config>) -> io::Re
     let client_read = client.try_clone()?;
     let server_read = server.try_clone()?;
 
-    let c2s_config = Arc::clone(&config);
+    let client_to_server_config = config.client_to_server;
+    let server_to_client_config = config.server_to_client;
 
-    let c2s = spawn(move || forword(client_read, server, conn_id, "Client -> Server", c2s_config));
+    let hex = config.hex;
 
-    let s2c_result = forword(server_read, client, conn_id, "Server -> Client", config);
+    let client_to_server = spawn(move || {
+        forword(
+            client_read,
+            server,
+            conn_id,
+            "Client->Server",
+            client_to_server_config,
+            hex,
+        )
+    });
 
-    let c2s_result = c2s.join().unwrap();
+    let server_to_client_result = forword(
+        server_read,
+        client,
+        conn_id,
+        "Server->Client",
+        server_to_client_config,
+        hex,
+    );
 
-    let s2c_bytes = s2c_result?;
-    let c2s_bytes = c2s_result?;
+    let client_to_server_result = client_to_server.join().unwrap();
+
+    let server_to_client_bytes = server_to_client_result?;
+    let client_to_server_bytes = client_to_server_result?;
 
     let elapsed = start.elapsed();
     println!(
-        "[conn {conn_id}] closed: Client->Server={c2s_bytes} bytes, Server->Client={s2c_bytes} bytes, duration={elapsed:?}"
+        "[conn {conn_id}] closed: Client->Server={client_to_server_bytes} bytes, Server->Client={server_to_client_bytes} bytes, duration={elapsed:?}"
     );
 
     Ok(())
@@ -139,8 +179,15 @@ fn main() -> io::Result<()> {
     // Arc stands for Atomic Reference Counted
     let config = Arc::new(Config {
         upstream: args.upstream,
-        latency: args.latency,
-        jitter: args.jitter,
+        client_to_server: DirectionConfig {
+            latency: Duration::from_millis(args.client_to_server_latency),
+            jitter: Duration::from_millis(args.client_to_server_jitter),
+        },
+        server_to_client: DirectionConfig {
+            latency: Duration::from_millis(args.server_to_client_latency),
+            jitter: Duration::from_millis(args.server_to_client_jitter),
+        },
+        hex: args.hex,
     });
 
     let addr = &args.listen;
