@@ -18,6 +18,8 @@ static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 struct DirectionConfig {
     latency: Duration,
     jitter: Duration,
+
+    bandwidth: Option<u64>, // bytes/second
 }
 
 #[derive(Parser, Debug)]
@@ -33,6 +35,12 @@ struct Args {
 
     #[arg(long, default_value_t = 0)]
     client_to_server_jitter: u64,
+
+    #[arg(long)]
+    client_to_server_bandwidth: Option<u64>,
+
+    #[arg(long)]
+    server_to_client_bandwidth: Option<u64>,
 
     #[arg(long, default_value_t = 0)]
     server_to_client_latency: u64,
@@ -50,6 +58,36 @@ struct Config {
     client_to_server: DirectionConfig,
     server_to_client: DirectionConfig,
     hex: bool,
+}
+
+struct RateLimiter {
+    bandwidth: u64, // bytes/second
+    start: Instant,
+    total_bytes: u64,
+}
+
+impl RateLimiter {
+    fn new(bandwidth: u64) -> Self {
+        Self {
+            bandwidth,
+            start: Instant::now(),
+            total_bytes: 0,
+        }
+    }
+
+    fn consume(&mut self, bytes: usize) {
+        self.total_bytes += bytes as u64;
+
+        let expected_secs = self.total_bytes as f64 / self.bandwidth as f64;
+
+        let expected = Duration::from_secs_f64(expected_secs);
+
+        let elapsed = self.start.elapsed();
+
+        if expected > elapsed {
+            sleep(expected - elapsed);
+        }
+    }
 }
 
 fn dump(data: &[u8]) {
@@ -94,6 +132,20 @@ fn apply_delay(base: Duration, jitter: Duration) {
     sleep(Duration::from_millis(delay_ms));
 }
 
+// fn apply_bandwidth_limit(bytes: usize, bandwidth: Option<u64>) {
+//     let Some(bytes_per_sec) = bandwidth else {
+//         return;
+//     };
+
+//     if bytes_per_sec == 0 {
+//         return;
+//     }
+
+//     let seconds = bytes as f64 / bytes_per_sec as f64;
+
+//     sleep(Duration::from_secs_f64(seconds));
+// }
+
 fn forword(
     mut reader: TcpStream,
     mut writer: TcpStream,
@@ -102,6 +154,8 @@ fn forword(
     direction_config: DirectionConfig,
     hex: bool,
 ) -> io::Result<u64> {
+    let mut limiter = direction_config.bandwidth.map(RateLimiter::new);
+
     let mut buf = [0u8; 4096];
     let mut total_bytes = 0u64;
 
@@ -119,6 +173,11 @@ fn forword(
         }
 
         apply_delay(direction_config.latency, direction_config.jitter);
+        // apply_bandwidth_limit(n, direction_config.bandwidth);
+
+        if let Some(limiter) = &mut limiter {
+            limiter.consume(n);
+        }
         writer.write_all(&buf[..n])?;
         total_bytes += n as u64;
     }
@@ -182,10 +241,12 @@ fn main() -> io::Result<()> {
         client_to_server: DirectionConfig {
             latency: Duration::from_millis(args.client_to_server_latency),
             jitter: Duration::from_millis(args.client_to_server_jitter),
+            bandwidth: args.client_to_server_bandwidth,
         },
         server_to_client: DirectionConfig {
             latency: Duration::from_millis(args.server_to_client_latency),
             jitter: Duration::from_millis(args.server_to_client_jitter),
+            bandwidth: args.server_to_client_bandwidth,
         },
         hex: args.hex,
     });
