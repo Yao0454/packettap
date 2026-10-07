@@ -61,32 +61,55 @@ struct Config {
 }
 
 struct RateLimiter {
-    bandwidth: u64, // bytes/second
-    start: Instant,
-    total_bytes: u64,
+    rate: f64, // bytes/second
+    capacity: f64,
+    tokens: f64,
+    last_update: Instant,
 }
 
 impl RateLimiter {
     fn new(bandwidth: u64) -> Self {
+        assert!(bandwidth > 0);
+
+        let capacity = bandwidth as f64 * 0.1;
         Self {
-            bandwidth,
-            start: Instant::now(),
-            total_bytes: 0,
+            rate: bandwidth as f64,
+            capacity,
+            tokens: capacity,
+            last_update: Instant::now(),
         }
     }
 
+    fn refill_by(&mut self, elapsed: Duration) {
+        self.tokens = (self.tokens + elapsed.as_secs_f64() * self.rate).min(self.capacity);
+    }
+
+    fn refill(&mut self) {
+        let now = Instant::now();
+
+        let elapsed = now.duration_since(self.last_update);
+
+        self.refill_by(elapsed);
+        self.last_update = now;
+    }
+
     fn consume(&mut self, bytes: usize) {
-        self.total_bytes += bytes as u64;
+        self.refill();
 
-        let expected_secs = self.total_bytes as f64 / self.bandwidth as f64;
+        let required = bytes as f64;
 
-        let expected = Duration::from_secs_f64(expected_secs);
-
-        let elapsed = self.start.elapsed();
-
-        if expected > elapsed {
-            sleep(expected - elapsed);
+        if self.tokens >= required {
+            self.tokens -= required;
+            return;
         }
+
+        let missing = required - self.tokens;
+        let wait_secs = missing / self.rate;
+
+        sleep(Duration::from_secs_f64(wait_secs));
+
+        self.tokens = 0.0;
+        self.last_update = Instant::now();
     }
 }
 
@@ -98,7 +121,7 @@ fn dump(data: &[u8]) {
             if i < chunk.len() {
                 print!("{:02x} ", chunk[i]);
             } else {
-                print!("  ");
+                print!("   ");
             }
         }
 
@@ -146,7 +169,7 @@ fn apply_delay(base: Duration, jitter: Duration) {
 //     sleep(Duration::from_secs_f64(seconds));
 // }
 
-fn forword(
+fn forward(
     mut reader: TcpStream,
     mut writer: TcpStream,
     conn_id: u64,
@@ -167,9 +190,10 @@ fn forword(
             break;
         }
 
+        println!("[conn {conn_id}] [{direction}] {n} bytes");
+
         if hex {
             dump(&buf[..n]);
-            println!("[conn {conn_id}] [{direction}] {n} bytes");
         }
 
         apply_delay(direction_config.latency, direction_config.jitter);
@@ -200,7 +224,7 @@ fn handle_client(client: TcpStream, conn_id: u64, config: Arc<Config>) -> io::Re
     let hex = config.hex;
 
     let client_to_server = spawn(move || {
-        forword(
+        forward(
             client_read,
             server,
             conn_id,
@@ -210,7 +234,7 @@ fn handle_client(client: TcpStream, conn_id: u64, config: Arc<Config>) -> io::Re
         )
     });
 
-    let server_to_client_result = forword(
+    let server_to_client_result = forward(
         server_read,
         client,
         conn_id,
@@ -263,12 +287,44 @@ fn main() -> io::Result<()> {
 
         let config = Arc::clone(&config);
 
-        println!("client connected: {addr}");
+        println!("[conn {conn_id}] client connected: {addr}");
 
         spawn(move || {
             if let Err(e) = handle_client(client, conn_id, config) {
                 eprintln!("connection error: {e}");
             }
         }); // 独立线程
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_bucket_starts_full() {
+        let limiter = RateLimiter::new(1000);
+
+        assert_eq!(limiter.rate, 1000.0);
+        assert_eq!(limiter.capacity, 100.0);
+        assert_eq!(limiter.tokens, 100.0);
+    }
+
+    #[test]
+    fn refill_adds_tokens() {
+        let mut limiter = RateLimiter::new(1000);
+        limiter.tokens = 0.0;
+        limiter.refill_by(Duration::from_millis(50));
+
+        assert_eq!(limiter.tokens, 50.0);
+    }
+
+    #[test]
+    fn refill_does_not_excced_capacity() {
+        let mut limiter = RateLimiter::new(1000);
+
+        limiter.tokens = 90.0;
+        limiter.refill_by(Duration::from_millis(100));
+        assert_eq!(limiter.tokens, 100.0);
     }
 }
