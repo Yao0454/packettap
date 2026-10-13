@@ -12,7 +12,7 @@ use std::{
 use rand::RngExt;
 
 use crate::{
-    config::{Args, Config, DirectionConfig},
+    config::{Config, DirectionConfig},
     dump,
     rate_limiter::RateLimiter,
 };
@@ -138,8 +138,8 @@ pub fn handle_client(client: TcpStream, conn_id: u64, config: Arc<Config>) -> io
     Ok(())
 }
 
-pub fn run(args: Args, config: Arc<Config>) -> io::Result<()> {
-    let addr = &args.listen;
+pub fn run(config: Arc<Config>) -> io::Result<()> {
+    let addr = &config.listen;
     let listener = TcpListener::bind(addr)?;
     println!("PacketTap listening on {addr}");
 

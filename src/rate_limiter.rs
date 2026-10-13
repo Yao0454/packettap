@@ -4,10 +4,10 @@ use std::{
 };
 
 pub struct RateLimiter {
-    pub rate: f64, // bytes/second
-    pub capacity: f64,
-    pub tokens: f64,
-    pub last_update: Instant,
+    rate: f64, // bytes/second
+    capacity: f64,
+    tokens: f64,
+    last_update: Instant,
 }
 
 impl RateLimiter {
@@ -27,20 +27,20 @@ impl RateLimiter {
         self.capacity as usize
     }
 
-    pub fn refill_by(&mut self, elapsed: Duration) {
+    fn refill_by(&mut self, elapsed: Duration) {
         self.tokens = (self.tokens + elapsed.as_secs_f64() * self.rate).min(self.capacity);
     }
 
-    pub fn refill(&mut self) {
-        let now = Instant::now();
+    // fn refill(&mut self) {
+    //     let now = Instant::now();
 
-        let elapsed = now.duration_since(self.last_update);
+    //     let elapsed = now.duration_since(self.last_update);
 
-        self.refill_by(elapsed);
-        self.last_update = now;
-    }
+    //     self.refill_by(elapsed);
+    //     self.last_update = now;
+    // }
 
-    pub fn consume_after(&mut self, elapsed: Duration, bytes: usize) -> Duration {
+    fn consume_after(&mut self, elapsed: Duration, bytes: usize) -> Duration {
         self.refill_by(elapsed);
 
         let required = bytes as f64;
@@ -76,7 +76,7 @@ mod tests {
 
     #[test]
     fn token_bucket_starts_full() {
-        let limiter = RateLimiter::new(1000, 10);
+        let limiter = RateLimiter::new(1000, 100);
 
         assert_eq!(limiter.rate, 1000.0);
         assert_eq!(limiter.capacity, 100.0);
@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn refill_adds_tokens() {
-        let mut limiter = RateLimiter::new(1000, 10);
+        let mut limiter = RateLimiter::new(1000, 100);
         limiter.tokens = 0.0;
         limiter.refill_by(Duration::from_millis(50));
 
@@ -93,8 +93,8 @@ mod tests {
     }
 
     #[test]
-    fn refill_does_not_excced_capacity() {
-        let mut limiter = RateLimiter::new(1000, 10);
+    fn refill_does_not_excceed_capacity() {
+        let mut limiter = RateLimiter::new(1000, 100);
 
         limiter.tokens = 90.0;
         limiter.refill_by(Duration::from_millis(100));
@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn consume_without_wait_when_tokens_are_enough() {
-        let mut limiter = RateLimiter::new(1000, 10);
+        let mut limiter = RateLimiter::new(1000, 100);
 
         // 初始 capacity = 100 bytes
         let wait = limiter.consume_after(Duration::ZERO, 40);
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn consume_returns_wait_when_tokens_are_insufficient() {
-        let mut limiter = RateLimiter::new(1000, 10);
+        let mut limiter = RateLimiter::new(1000, 100);
 
         // 初始 100 tokens
         let wait = limiter.consume_after(Duration::ZERO, 150);
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn elapsed_time_refills_before_consuming() {
-        let mut limiter = RateLimiter::new(1000, 10);
+        let mut limiter = RateLimiter::new(1000, 100);
 
         limiter.tokens = 0.0;
 

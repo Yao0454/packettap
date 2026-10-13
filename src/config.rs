@@ -8,52 +8,34 @@ pub struct Args {
     pub listen: String,
 
     #[arg(long)]
-    pub upstream: String,
+    upstream: String,
 
     #[arg(long, default_value_t = 0)]
-    pub client_to_server_latency: u64,
+    client_to_server_latency: u64,
 
     #[arg(long, default_value_t = 0)]
-    pub client_to_server_jitter: u64,
+    client_to_server_jitter: u64,
 
     #[arg(long)]
-    pub client_to_server_bandwidth: Option<u64>,
+    client_to_server_bandwidth: Option<u64>,
 
     #[arg(long)]
-    pub server_to_client_bandwidth: Option<u64>,
+    server_to_client_bandwidth: Option<u64>,
 
     #[arg(long, requires = "client_to_server_bandwidth")]
-    pub client_to_server_burst: Option<u64>,
+    client_to_server_burst: Option<u64>,
 
     #[arg(long, requires = "server_to_client_bandwidth")]
-    pub server_to_client_burst: Option<u64>,
+    server_to_client_burst: Option<u64>,
 
     #[arg(long, default_value_t = 0)]
-    pub server_to_client_latency: u64,
+    server_to_client_latency: u64,
 
     #[arg(long, default_value_t = 0)]
-    pub server_to_client_jitter: u64,
+    server_to_client_jitter: u64,
 
     #[arg(long)]
-    pub hex: bool,
-}
-
-impl Clone for Args {
-    fn clone(&self) -> Self {
-        Self {
-            listen: self.listen.clone(),
-            upstream: self.upstream.clone(),
-            client_to_server_latency: self.client_to_server_latency,
-            client_to_server_jitter: self.client_to_server_jitter,
-            client_to_server_bandwidth: self.client_to_server_bandwidth,
-            server_to_client_bandwidth: self.server_to_client_bandwidth,
-            client_to_server_burst: self.client_to_server_burst,
-            server_to_client_burst: self.server_to_client_burst,
-            server_to_client_latency: self.server_to_client_latency,
-            server_to_client_jitter: self.server_to_client_jitter,
-            hex: self.hex,
-        }
-    }
+    hex: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -67,6 +49,7 @@ pub struct DirectionConfig {
 
 #[derive(Debug)]
 pub struct Config {
+    pub listen: String,
     pub upstream: String,
     pub client_to_server: DirectionConfig,
     pub server_to_client: DirectionConfig,
@@ -76,6 +59,7 @@ pub struct Config {
 impl From<Args> for Config {
     fn from(args: Args) -> Self {
         Self {
+            listen: args.listen,
             upstream: args.upstream,
             client_to_server: DirectionConfig {
                 latency: Duration::from_millis(args.client_to_server_latency),

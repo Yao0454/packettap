@@ -12,7 +12,7 @@ use packettap::{
 fn main() -> io::Result<()> {
     let args = Args::parse();
 
-    let config = Arc::new(Config::from(args.clone()));
+    let config = Arc::new(Config::from(args));
 
-    run(args, config)
+    run(config)
 }
