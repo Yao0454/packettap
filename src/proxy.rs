@@ -4,6 +4,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
+        mpsc,
     },
     thread::{sleep, spawn},
     time::{Duration, Instant},
@@ -91,48 +92,97 @@ pub fn forward(
     Ok(total_bytes)
 }
 
-pub fn handle_client(client: TcpStream, conn_id: u64, config: Arc<Config>) -> io::Result<()> {
+fn handle_client(client: TcpStream, conn_id: u64, config: Arc<Config>) -> io::Result<()> {
     let start = Instant::now();
     let server = TcpStream::connect(&config.upstream)?;
 
-    println!("connected to upstream server");
+    println!("[conn {conn_id}] connected to upstream server");
 
     let client_read = client.try_clone()?;
     let server_read = server.try_clone()?;
+
+    let client_write = client.try_clone()?;
+    let server_write = server.try_clone()?;
 
     let client_to_server_config = config.client_to_server;
     let server_to_client_config = config.server_to_client;
 
     let hex = config.hex;
 
-    let client_to_server = spawn(move || {
-        forward(
+    let (tx, rx) = mpsc::channel();
+
+    let tx1 = tx.clone();
+
+    spawn(move || {
+        let result = forward(
             client_read,
             server,
             conn_id,
             "Client->Server",
             client_to_server_config,
             hex,
-        )
+        );
+        tx1.send(("Client->Server", result)).unwrap();
     });
 
-    let server_to_client_result = forward(
-        server_read,
-        client,
-        conn_id,
-        "Server->Client",
-        server_to_client_config,
-        hex,
-    );
+    let tx2 = tx.clone();
 
-    let client_to_server_result = client_to_server.join().unwrap();
+    spawn(move || {
+        let result = forward(
+            server_read,
+            client,
+            conn_id,
+            "Server->Client",
+            server_to_client_config,
+            hex,
+        );
 
-    let server_to_client_bytes = server_to_client_result?;
-    let client_to_server_bytes = client_to_server_result?;
+        tx2.send(("Server->Client", result)).unwrap();
+    });
+
+    drop(tx);
+
+    let (direction, first_result) = rx.recv().unwrap();
+
+    println!("[conn {conn_id}] {direction} finished");
+
+    match direction {
+        "Client->Server" => {
+            let _ = server_write.shutdown(std::net::Shutdown::Write);
+        }
+
+        "Server->Client" => {
+            let _ = client_write.shutdown(std::net::Shutdown::Write);
+        }
+
+        _ => {}
+    }
+
+    let (_, second_result) = rx.recv().unwrap();
+
+    let client_to_server_bytes;
+    let server_to_client_bytes;
+
+    match direction {
+        "Client->Server" => {
+            client_to_server_bytes = first_result?;
+            server_to_client_bytes = second_result?;
+        }
+
+        "Server->Client" => {
+            server_to_client_bytes = first_result?;
+            client_to_server_bytes = second_result?;
+        }
+
+        _ => unreachable!(),
+    }
 
     let elapsed = start.elapsed();
     println!(
-        "[conn {conn_id}] closed: Client->Server={client_to_server_bytes} bytes, Server->Client={server_to_client_bytes} bytes, duration={elapsed:?}"
+        "[conn {conn_id}] closed: \
+        Client->Server={client_to_server_bytes} bytes, \
+        Server->Client={server_to_client_bytes} bytes, \
+        duration={elapsed:?}"
     );
 
     Ok(())
